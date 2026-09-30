@@ -7,6 +7,7 @@ import statistics
 import subprocess
 import sys
 import textwrap
+import time
 import warnings
 from pathlib import Path
 
@@ -118,21 +119,41 @@ def test_startup_dispatch_benchmark(tmp_path):
 
     cpu_count = os.cpu_count() or 1
     worker_counts = sorted({cpu_count, min(64, max(32, 8 * cpu_count))})
-    repetitions = 9
-    warmups = 2
+    # Keep the whole benchmark below loky's 60 s faulthandler timeout on the
+    # slower Windows runner while retaining an odd number of paired samples.
+    repetitions = 7
+    warmups = 1
 
     def measure(revision, workers):
         env = os.environ.copy()
+        env.pop("COVERAGE_PROCESS_START", None)
         source = str(revisions[revision])
         env["PYTHONPATH"] = source + os.pathsep + env.get("PYTHONPATH", "")
-        completed = subprocess.run(
-            [sys.executable, str(helper), str(workers)],
-            cwd=tmp_path,
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=240,
+        print(
+            f"benchmark measure revision={revision} workers={workers}",
+            flush=True,
+        )
+        started_at = time.perf_counter()
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(helper), str(workers)],
+                cwd=tmp_path,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError(
+                "benchmark helper timed out for "
+                f"revision={revision}, workers={workers}"
+            ) from error
+        print(
+            "benchmark completed "
+            f"revision={revision} workers={workers} "
+            f"wall_seconds={time.perf_counter() - started_at:.3f}",
+            flush=True,
         )
         result = json.loads(completed.stdout.strip().splitlines()[-1])
         assert result["process_count"] == workers
